@@ -1,7 +1,7 @@
 (function(){
   'use strict';
 
-  var STORAGE_KEY = 'lecture_register_data_v1';
+  var STORAGE_KEY = 'studystack_data_v1';
   var app = document.getElementById('app');
   var importInput = document.getElementById('importFileInput');
 
@@ -129,8 +129,8 @@
     return (
       '<div class="cover">' +
         '<span class="stamp">Vol. I &middot; Study Archive</span>' +
-        '<h1>Lecture Register</h1>' +
-        '<p>YouTube lectures, filed subject by subject, chapter by chapter</p>' +
+        '<h1>StudyStack</h1>' +
+        '<p>YouTube lectures, stacked subject by subject, chapter by chapter</p>' +
       '</div>'
     );
   }
@@ -168,6 +168,7 @@
 
     var html = '<div class="ledger-page">';
     html += '<div class="page-actions">' +
+      (path.length > 1 ? '<button class="btn ghost" id="exportFolderBtn">&#11015; Export this folder</button>' : '') +
       '<button class="btn" id="newFolderBtn">&#128193; New folder</button>' +
       '<button class="btn gold" id="newLinkBtn">&#9654; Add lecture link</button>' +
     '</div>';
@@ -397,36 +398,75 @@
   }
 
   // ---------- import / export ----------
-  function exportBackup(){
-    var blob = new Blob([JSON.stringify(data, null, 2)], { type:'application/json' });
+  function slugify(name){
+    return (name || 'export').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'export';
+  }
+  function exportNode(node, filePrefix){
+    var blob = new Blob([JSON.stringify(node, null, 2)], { type:'application/json' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     var stamp = new Date().toISOString().slice(0,10);
     a.href = url;
-    a.download = 'lecture-register-backup-' + stamp + '.json';
+    a.download = filePrefix + '-' + slugify(node.name) + '-' + stamp + '.json';
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   }
+  function exportBackup(){ exportNode(data, 'studystack-full'); }
+  function exportCurrentFolder(){ exportNode(currentFolder(), 'studystack-folder'); }
+
+  function regenerateIds(node){
+    var clone = JSON.parse(JSON.stringify(node));
+    (function walk(n){
+      n.id = genId();
+      if(n.type === 'folder' && n.children) n.children.forEach(walk);
+    })(clone);
+    return clone;
+  }
+
   function importBackup(file){
     var reader = new FileReader();
     reader.onload = function(){
-      try{
-        var parsed = JSON.parse(reader.result);
-        if(!parsed || parsed.type !== 'folder'){ throw new Error('bad shape'); }
-        var ok = confirm('Ye import current library ko PURI TARAH REPLACE kar dega. Pehle export karke backup le liya? Continue karein?');
-        if(!ok) return;
-        data = parsed;
-        path = ['root'];
-        saveData();
-        render();
-        alert('Backup import ho gaya.');
-      }catch(e){
-        alert('Ye file valid Lecture Register backup nahi lag rahi.');
+      var parsed;
+      try{ parsed = JSON.parse(reader.result); }catch(e){ alert('Ye JSON file valid nahi hai.'); return; }
+      if(!parsed || parsed.type !== 'folder' || typeof parsed.name !== 'string'){
+        alert('Ye StudyStack backup file nahi lag rahi.');
+        return;
       }
+      promptImportChoiceModal(parsed);
     };
     reader.readAsText(file);
+  }
+
+  function promptImportChoiceModal(parsed){
+    var prog = progressOf(parsed);
+    openModal(
+      '<h3>Import &ldquo;' + esc(parsed.name) + '&rdquo;</h3>' +
+      '<p style="font-size:.8rem;color:var(--ink-soft);margin:0 0 18px;">' +
+        'Contains ' + prog.total + ' link(s). Kaise import karna hai?' +
+      '</p>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;">' +
+        '<button class="btn gold" id="mergeBtn" style="text-align:left;">Add into current folder<br><span style="font-weight:400;font-size:.72rem;opacity:.75;">Keeps everything you already have — just adds this as a new folder here.</span></button>' +
+        '<button class="btn danger" id="replaceBtn" style="text-align:left;">Replace entire library<br><span style="font-weight:400;font-size:.72rem;opacity:.75;">Overwrites everything currently saved in this browser.</span></button>' +
+        '<button class="btn" id="modalCancelBtn">Cancel</button>' +
+      '</div>'
+    );
+    document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
+    document.getElementById('mergeBtn').addEventListener('click', function(){
+      var clone = regenerateIds(parsed);
+      currentFolder().children = currentFolder().children || [];
+      currentFolder().children.push(clone);
+      saveData(); closeModal(); render();
+    });
+    document.getElementById('replaceBtn').addEventListener('click', function(){
+      if(!confirm('Pakka? Ye current PURI library replace kar dega — is action ko undo nahi kar sakte (jab tak apni purani backup file na ho).')) return;
+      var clone = regenerateIds(parsed);
+      clone.id = 'root';
+      data = clone;
+      path = ['root'];
+      saveData(); closeModal(); render();
+    });
   }
 
   // ---------- delete ----------
@@ -471,6 +511,8 @@
     }
     var exportBtn = document.getElementById('exportBtn');
     if(exportBtn) exportBtn.addEventListener('click', exportBackup);
+    var exportFolderBtn = document.getElementById('exportFolderBtn');
+    if(exportFolderBtn) exportFolderBtn.addEventListener('click', exportCurrentFolder);
     var importBtn = document.getElementById('importBtn');
     if(importBtn) importBtn.addEventListener('click', function(){ importInput.click(); });
 
