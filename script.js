@@ -24,6 +24,112 @@
   }
   function saveData(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }catch(e){}
+    scheduleAutoSync();
+  }
+
+  // ---------- GitHub Gist cloud sync — token stored only in this browser ----------
+  var STORAGE_GH_TOKEN = 'studystack_gh_token';
+  var STORAGE_GIST_ID = 'studystack_gist_id';
+  var STORAGE_AUTOSYNC = 'studystack_autosync';
+  var STORAGE_LAST_SYNC = 'studystack_last_sync';
+  var GIST_FILENAME = 'studystack-data.json';
+  var autoSyncTimer = null;
+
+  function getGhToken(){ try{ return localStorage.getItem(STORAGE_GH_TOKEN) || ''; }catch(e){ return ''; } }
+  function setGhToken(t){ try{ if(t) localStorage.setItem(STORAGE_GH_TOKEN, t); else localStorage.removeItem(STORAGE_GH_TOKEN); }catch(e){} }
+  function getGistId(){ try{ return localStorage.getItem(STORAGE_GIST_ID) || ''; }catch(e){ return ''; } }
+  function setGistId(id){ try{ if(id) localStorage.setItem(STORAGE_GIST_ID, id); else localStorage.removeItem(STORAGE_GIST_ID); }catch(e){} }
+  function getAutoSync(){ try{ return localStorage.getItem(STORAGE_AUTOSYNC) === '1'; }catch(e){ return false; } }
+  function setAutoSync(on){ try{ localStorage.setItem(STORAGE_AUTOSYNC, on ? '1' : '0'); }catch(e){} }
+  function getLastSync(){ try{ return parseInt(localStorage.getItem(STORAGE_LAST_SYNC) || '0', 10); }catch(e){ return 0; } }
+  function setLastSync(ts){ try{ localStorage.setItem(STORAGE_LAST_SYNC, String(ts)); }catch(e){} }
+
+  function scheduleAutoSync(){
+    if(!getAutoSync() || !getGhToken() || !getGistId()) return;
+    clearTimeout(autoSyncTimer);
+    autoSyncTimer = setTimeout(function(){ pushToGist(true); }, 2500);
+  }
+
+  async function pushToGist(silent){
+    var token = getGhToken();
+    if(!token){ if(!silent) alert('Pehle GitHub token set karo.'); return false; }
+    var gistId = getGistId();
+    var payload = {
+      description: 'StudyStack backup',
+      public: false,
+      files: {}
+    };
+    payload.files[GIST_FILENAME] = { content: JSON.stringify(data, null, 2) };
+    try{
+      var url = gistId ? ('https://api.github.com/gists/' + gistId) : 'https://api.github.com/gists';
+      var res = await fetch(url, {
+        method: gistId ? 'PATCH' : 'POST',
+        headers: {
+          'Authorization': 'token ' + token,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok){ var errText = await res.text(); throw new Error(res.status + ': ' + errText.slice(0,200)); }
+      var json = await res.json();
+      if(!gistId) setGistId(json.id);
+      setLastSync(Date.now());
+      if(!silent) alert('Cloud pe save ho gaya \u2705');
+      return true;
+    }catch(err){
+      if(!silent) alert('Push fail ho gaya:\n' + err.message);
+      return false;
+    }
+  }
+
+  async function pullFromGist(){
+    var token = getGhToken();
+    var gistId = getGistId();
+    if(!token || !gistId){ alert('Pehle token set karo aur ek cloud backup se connect karo.'); return; }
+    try{
+      var res = await fetch('https://api.github.com/gists/' + gistId, {
+        headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' }
+      });
+      if(!res.ok) throw new Error('Gist load nahi hua (status ' + res.status + ')');
+      var json = await res.json();
+      var file = json.files && json.files[GIST_FILENAME];
+      if(!file) throw new Error('Is gist mein StudyStack data file nahi mili.');
+      var content = file.content;
+      if(file.truncated){
+        var rawRes = await fetch(file.raw_url);
+        content = await rawRes.text();
+      }
+      var parsed = JSON.parse(content);
+      if(!parsed || parsed.type !== 'folder') throw new Error('Cloud data valid nahi lag raha.');
+      setLastSync(Date.now());
+      closeModal();
+      promptImportChoiceModal(parsed);
+    }catch(err){
+      alert('Pull fail ho gaya:\n' + err.message);
+    }
+  }
+
+  // ---------- OMDb (IMDb) key — stored only in this browser, never in source files ----------
+  var STORAGE_OMDB_KEY = 'studystack_omdb_key';
+  function getOmdbKey(){ try{ return localStorage.getItem(STORAGE_OMDB_KEY) || ''; }catch(e){ return ''; } }
+  function setOmdbKey(key){
+    try{
+      if(key) localStorage.setItem(STORAGE_OMDB_KEY, key);
+      else localStorage.removeItem(STORAGE_OMDB_KEY);
+    }catch(e){}
+  }
+  function promptOmdbKey(){
+    var existing = getOmdbKey();
+    var masked = existing ? (existing.slice(0,4) + '••••' + existing.slice(-2)) : null;
+    var message = masked
+      ? 'OMDb (IMDb) API key set hai (' + masked + ').\n\nNaya key paste karo replace karne ke liye, ya CLEAR likho hatane ke liye:'
+      : 'Apna OMDb API key paste karo (omdbapi.com se free milta hai).\n\nYe sirf is browser mein save hota hai — kabhi source files mein nahi jaata.';
+    var input = prompt(message, '');
+    if(input === null) return;
+    var trimmed = input.trim();
+    if(trimmed.toUpperCase() === 'CLEAR'){ setOmdbKey(null); alert('OMDb key hata di gayi.'); }
+    else if(trimmed){ setOmdbKey(trimmed); alert('OMDb key save ho gayi. Ab "Add link" mein Title ke paas Auto-fill button use kar sakte ho.'); }
   }
 
   // ---------- id / tree helpers ----------
@@ -96,8 +202,28 @@
       return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
     });
   }
-  function isYoutube(url){
-    return /youtube\.com|youtu\.be/i.test(url || '');
+  var SITE_LABELS = {
+    'youtube.com':'YouTube', 'youtu.be':'YouTube',
+    'netflix.com':'Netflix', 'primevideo.com':'Prime Video', 'amazon.com':'Amazon',
+    'hotstar.com':'Hotstar', 'jiocinema.com':'JioCinema', 'sonyliv.com':'SonyLIV',
+    'instagram.com':'Instagram', 'twitter.com':'Twitter', 'x.com':'X',
+    'spotify.com':'Spotify', 'github.com':'GitHub', 'medium.com':'Medium',
+    'wikipedia.org':'Wikipedia', 'drive.google.com':'Drive', 'docs.google.com':'Docs'
+  };
+  function hostnameOf(url){
+    try{ return new URL(url).hostname.replace(/^www\./,''); }catch(e){ return ''; }
+  }
+  function siteLabel(url){
+    var host = hostnameOf(url);
+    if(!host) return '';
+    if(SITE_LABELS[host]) return SITE_LABELS[host];
+    var parts = host.split('.');
+    return parts.length >= 2 ? host : host;
+  }
+  function faviconUrl(url){
+    var host = hostnameOf(url);
+    if(!host) return '';
+    return 'https://www.google.com/s2/favicons?sz=32&domain=' + encodeURIComponent(host);
   }
   function safeUrl(url){
     try{
@@ -110,7 +236,6 @@
   // ---------- rendering ----------
   function render(){
     var html = '';
-    html += renderCover();
     html += renderToolbar();
 
     if(searchQuery.trim()){
@@ -125,23 +250,16 @@
     wireEvents();
   }
 
-  function renderCover(){
-    return (
-      '<div class="cover">' +
-        '<span class="stamp">Vol. I &middot; Study Archive</span>' +
-        '<h1>StudyStack</h1>' +
-        '<p>YouTube lectures, stacked subject by subject, chapter by chapter</p>' +
-      '</div>'
-    );
-  }
-
   function renderToolbar(){
     return (
       '<div class="toolbar">' +
+        '<div class="brand-tag">&#128193; StudyStack</div>' +
         '<div class="search-wrap">' +
           '<span class="icon">&#128269;</span>' +
           '<input type="text" id="searchInput" placeholder="Search every folder and link..." value="' + esc(searchQuery) + '">' +
         '</div>' +
+        '<button class="btn ghost" id="cloudSyncBtn">&#9729; Cloud Sync</button>' +
+        '<button class="btn ghost" id="omdbKeyBtn">&#127916; OMDb Key</button>' +
         '<button class="btn ghost" id="exportBtn">&#11015; Export backup</button>' +
         '<button class="btn ghost" id="importBtn">&#11014; Import backup</button>' +
       '</div>'
@@ -170,13 +288,13 @@
     html += '<div class="page-actions">' +
       (path.length > 1 ? '<button class="btn ghost" id="exportFolderBtn">&#11015; Export this folder</button>' : '') +
       '<button class="btn" id="newFolderBtn">&#128193; New folder</button>' +
-      '<button class="btn gold" id="newLinkBtn">&#9654; Add lecture link</button>' +
+      '<button class="btn gold" id="newLinkBtn">&#9654; Add link</button>' +
     '</div>';
 
     if(subfolders.length === 0 && links.length === 0){
       html += '<div class="empty-state">' +
         '<div class="big">This folder is empty</div>' +
-        '<p>Create a subject or chapter folder, or file a lecture link here directly.</p>' +
+        '<p>Create a folder, or save a link here directly — movies, courses, anime, articles, anything.</p>' +
       '</div>';
     } else {
       if(subfolders.length){
@@ -201,7 +319,7 @@
         html += '</div>';
       }
       if(links.length){
-        html += '<div class="section-label">Lecture links</div>';
+        html += '<div class="section-label">Links</div>';
         html += '<div class="link-rows">';
         links.forEach(function(l, i){
           html += renderLinkRow(l, i+1);
@@ -215,14 +333,19 @@
 
   function renderLinkRow(l, rollNum, pathHint){
     var url = safeUrl(l.url) || '#';
+    var fav = faviconUrl(url);
+    var site = siteLabel(url);
     return (
       '<div class="link-row' + (l.watched ? ' watched' : '') + '">' +
         '<span class="roll">' + (rollNum != null ? String(rollNum).padStart(2,'0') : '') + '</span>' +
-        '<button class="watch-box" data-toggle-watch="' + esc(l.id) + '" title="Mark watched">' + (l.watched ? '&#10003;' : '') + '</button>' +
+        '<button class="watch-box" data-toggle-watch="' + esc(l.id) + '" title="Mark as done">' + (l.watched ? '&#10003;' : '') + '</button>' +
         '<div class="link-body">' +
-          '<a class="ltitle" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(l.name) + '</a>' +
+          '<a class="ltitle" href="' + esc(url) + '" target="_blank" rel="noopener">' +
+            (fav ? '<img class="favicon" src="' + esc(fav) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '') +
+            esc(l.name) +
+          '</a>' +
           '<div class="lmeta">' +
-            (isYoutube(l.url) ? '<span class="tag">YouTube</span>' : '') +
+            (site ? '<span class="tag">' + esc(site) + '</span>' : '') +
             (pathHint ? '<span class="path-hint">' + esc(pathHint) + '</span>' : '') +
             (l.note ? '<span class="note">' + esc(l.note) + '</span>' : '') +
           '</div>' +
@@ -300,7 +423,7 @@
     openModal(
       '<h3>' + (isEdit ? 'Rename folder' : 'New folder') + '</h3>' +
       '<label class="field-label">Folder name</label>' +
-      '<input type="text" id="folderNameInput" placeholder="e.g. Business Economics" value="' + esc(isEdit ? existingFolder.name : '') + '">' +
+      '<input type="text" id="folderNameInput" placeholder="e.g. Movies, Anime, Business Economics" value="' + esc(isEdit ? existingFolder.name : '') + '">' +
       '<div class="modal-actions">' +
         '<button class="btn" id="modalCancelBtn">Cancel</button>' +
         '<button class="btn gold" id="modalSaveBtn">' + (isEdit ? 'Save' : 'Create') + '</button>' +
@@ -327,14 +450,23 @@
 
   function promptLinkModal(existingLink){
     var isEdit = !!existingLink;
+    var folder = currentFolder();
+    var initialNote = isEdit ? (existingLink.note || '') : (folder.noteTemplate || '');
     openModal(
-      '<h3>' + (isEdit ? 'Edit lecture link' : 'Add lecture link') + '</h3>' +
-      '<label class="field-label">Title</label>' +
-      '<input type="text" id="linkNameInput" placeholder="e.g. Ch.1 Nature and Scope - Part 1" value="' + esc(isEdit ? existingLink.name : '') + '">' +
-      '<label class="field-label">YouTube / video URL</label>' +
-      '<input type="url" id="linkUrlInput" placeholder="https://youtube.com/watch?v=..." value="' + esc(isEdit ? existingLink.url : '') + '">' +
+      '<h3>' + (isEdit ? 'Edit link' : 'Add link') + '</h3>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">' +
+        '<label class="field-label" style="margin:0;">Title</label>' +
+        '<button type="button" class="icon-btn" id="omdbFillBtn" style="font-size:.66rem;color:var(--gold);white-space:nowrap;" title="Fetch movie/show info from IMDb">&#127916; Auto-fill from IMDb</button>' +
+      '</div>' +
+      '<input type="text" id="linkNameInput" placeholder="e.g. The Station Agent (2003), or Ch.2 - ICA 1872" value="' + esc(isEdit ? existingLink.name : '') + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">' +
+        '<label class="field-label" style="margin:0;">Link (any website)</label>' +
+        '<button type="button" class="icon-btn" id="ytFillBtn" style="font-size:.66rem;color:var(--gold);white-space:nowrap;" title="Fetch title from YouTube">&#9654; Fetch YouTube title</button>' +
+      '</div>' +
+      '<input type="url" id="linkUrlInput" placeholder="https:// ... YouTube, Netflix, an article, anything" value="' + esc(isEdit ? existingLink.url : '') + '">' +
       '<label class="field-label">Note (optional)</label>' +
-      '<textarea id="linkNoteInput" placeholder="Teacher, timestamp, anything to remember...">' + esc(isEdit ? (existingLink.note || '') : '') + '</textarea>' +
+      '<textarea id="linkNoteInput" placeholder="Cast, teacher, timestamp, anything to remember...">' + esc(initialNote) + '</textarea>' +
+      (!isEdit && folder.noteTemplate ? '<div style="font-size:.68rem;color:var(--ink-soft);margin-top:4px;">Pre-filled from this folder\u2019s last note — edit or clear as needed.</div>' : '') +
       '<div class="modal-actions">' +
         '<button class="btn" id="modalCancelBtn">Cancel</button>' +
         '<button class="btn gold" id="modalSaveBtn">' + (isEdit ? 'Save' : 'Add link') + '</button>' +
@@ -342,6 +474,56 @@
     );
     var nameInput = document.getElementById('linkNameInput');
     nameInput.focus();
+
+    document.getElementById('omdbFillBtn').addEventListener('click', runOmdbAutofill);
+    document.getElementById('ytFillBtn').addEventListener('click', runYoutubeAutofill);
+
+    function runOmdbAutofill(){
+      var key = getOmdbKey();
+      if(!key){
+        if(confirm('OMDb API key set nahi hai. Abhi set karna chahoge?')) promptOmdbKey();
+        return;
+      }
+      var titleVal = nameInput.value.trim();
+      if(!titleVal){ alert('Pehle Title field mein movie/show ka naam likho.'); return; }
+      var btn = document.getElementById('omdbFillBtn');
+      var original = btn.innerHTML;
+      btn.innerHTML = '⏳'; btn.disabled = true;
+      fetch('https://www.omdbapi.com/?apikey=' + encodeURIComponent(key) + '&t=' + encodeURIComponent(titleVal))
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if(d.Response === 'False'){ alert('IMDb par "' + titleVal + '" nahi mila: ' + (d.Error || '')); return; }
+          var parts = [];
+          if(d.Year) parts.push('Year: ' + d.Year);
+          if(d.Genre && d.Genre !== 'N/A') parts.push('Genre: ' + d.Genre);
+          if(d.Actors && d.Actors !== 'N/A') parts.push('Cast: ' + d.Actors);
+          if(d.Director && d.Director !== 'N/A') parts.push('Director: ' + d.Director);
+          if(d.Plot && d.Plot !== 'N/A') parts.push('Plot: ' + d.Plot);
+          document.getElementById('linkNoteInput').value = parts.join('\n');
+          if(d.Title) nameInput.value = d.Title + (d.Year ? ' (' + d.Year + ')' : '');
+        })
+        .catch(function(){ alert('IMDb se data nahi mil paaya. Internet ya API key check karo.'); })
+        .then(function(){ btn.innerHTML = original; btn.disabled = false; }, function(){ btn.innerHTML = original; btn.disabled = false; });
+    }
+
+    function runYoutubeAutofill(){
+      var urlVal = document.getElementById('linkUrlInput').value.trim();
+      if(!urlVal){ alert('Pehle Link field mein YouTube URL paste karo.'); return; }
+      if(!/youtube\.com|youtu\.be/i.test(urlVal)){ alert('Ye YouTube link nahi lag raha — ye button sirf YouTube ke liye kaam karta hai.'); return; }
+      var btn = document.getElementById('ytFillBtn');
+      var original = btn.innerHTML;
+      btn.innerHTML = '⏳'; btn.disabled = true;
+      fetch('https://www.youtube.com/oembed?url=' + encodeURIComponent(urlVal) + '&format=json')
+        .then(function(r){ if(!r.ok) throw new Error('not found'); return r.json(); })
+        .then(function(d){
+          nameInput.value = d.title || nameInput.value;
+          var noteEl = document.getElementById('linkNoteInput');
+          if(!noteEl.value.trim() && d.author_name) noteEl.value = 'Channel: ' + d.author_name;
+        })
+        .catch(function(){ alert('Video ka title nahi mil paaya — link private ya galat ho sakta hai.'); })
+        .then(function(){ btn.innerHTML = original; btn.disabled = false; }, function(){ btn.innerHTML = original; btn.disabled = false; });
+    }
+
     function submit(){
       var name = nameInput.value.trim();
       var url = document.getElementById('linkUrlInput').value.trim();
@@ -351,8 +533,9 @@
       if(isEdit){
         existingLink.name = name; existingLink.url = url; existingLink.note = note;
       } else {
-        currentFolder().children = currentFolder().children || [];
-        currentFolder().children.push({ id: genId(), type:'link', name: name, url: url, note: note, watched:false });
+        folder.children = folder.children || [];
+        folder.children.push({ id: genId(), type:'link', name: name, url: url, note: note, watched:false });
+        if(note) folder.noteTemplate = note;
       }
       saveData(); closeModal(); render();
     }
@@ -397,7 +580,120 @@
     });
   }
 
-  // ---------- import / export ----------
+  function timeAgo(ts){
+    if(!ts) return 'never';
+    var s = Math.floor((Date.now() - ts) / 1000);
+    if(s < 60) return 'just now';
+    if(s < 3600) return Math.floor(s/60) + ' min ago';
+    if(s < 86400) return Math.floor(s/3600) + ' hr ago';
+    return Math.floor(s/86400) + ' day(s) ago';
+  }
+
+  function promptCloudSyncModal(){
+    var token = getGhToken();
+    var gistId = getGistId();
+    var html = '<h3>&#9729; Cloud Sync</h3>';
+
+    if(!token){
+      html +=
+        '<p style="font-size:.8rem;color:var(--ink-soft);margin:0 0 12px;">' +
+          'Sync tumhare GitHub account ke ek private Gist mein hota hai — same account jo tum already use karte ho. Ek Personal Access Token chahiye, sirf <b>gist</b> permission ke saath.' +
+        '</p>' +
+        '<p style="margin:0 0 16px;"><a href="https://github.com/settings/tokens/new?scopes=gist&description=StudyStack%20Sync" target="_blank" rel="noopener" style="color:var(--gold);font-size:.82rem;">Token banao GitHub par &#8594;</a></p>' +
+        '<label class="field-label">Token paste karo</label>' +
+        '<input type="text" id="ghTokenInput" placeholder="ghp_...">' +
+        '<div class="modal-actions">' +
+          '<button class="btn" id="modalCancelBtn">Cancel</button>' +
+          '<button class="btn gold" id="ghTokenSaveBtn">Save token</button>' +
+        '</div>';
+      openModal(html);
+      document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
+      var tokenInput = document.getElementById('ghTokenInput');
+      tokenInput.focus();
+      document.getElementById('ghTokenSaveBtn').addEventListener('click', function(){
+        var v = tokenInput.value.trim();
+        if(!v){ alert('Token paste karo pehle.'); return; }
+        setGhToken(v);
+        promptCloudSyncModal();
+      });
+      return;
+    }
+
+    var masked = token.slice(0,4) + '\u2022\u2022\u2022\u2022' + token.slice(-4);
+    html += '<p style="font-size:.78rem;color:var(--ink-soft);margin:0 0 4px;">Token: ' + esc(masked) + ' &middot; <a href="#" id="ghTokenClearLink" style="color:var(--rule-red);">remove</a></p>';
+
+    if(!gistId){
+      html +=
+        '<p style="font-size:.8rem;color:var(--ink-soft);margin:14px 0 14px;">Koi cloud backup connect nahi hai abhi.</p>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;">' +
+          '<button class="btn gold" id="createGistBtn">&#127381; Create new cloud backup</button>' +
+        '</div>' +
+        '<label class="field-label">Ya doosre device ki existing backup se connect karo</label>' +
+        '<input type="text" id="gistIdInput" placeholder="Gist URL ya ID paste karo">' +
+        '<div class="modal-actions">' +
+          '<button class="btn" id="modalCancelBtn">Close</button>' +
+          '<button class="btn" id="connectGistBtn">Connect</button>' +
+        '</div>';
+      openModal(html);
+      wireCommonCloudButtons();
+      document.getElementById('createGistBtn').addEventListener('click', async function(){
+        var btn = this; var orig = btn.textContent;
+        btn.textContent = '\u23f3 Creating...'; btn.disabled = true;
+        var ok = await pushToGist(true);
+        if(ok){ promptCloudSyncModal(); } else { btn.textContent = orig; btn.disabled = false; }
+      });
+      document.getElementById('connectGistBtn').addEventListener('click', function(){
+        var raw = document.getElementById('gistIdInput').value.trim();
+        if(!raw){ return; }
+        var m = raw.match(/gist\.github\.com\/[^\/]+\/([a-f0-9]+)/i) || raw.match(/^([a-f0-9]{20,})$/i);
+        var id = m ? m[1] : raw;
+        setGistId(id);
+        promptCloudSyncModal();
+      });
+      return;
+    }
+
+    html +=
+      '<p style="font-size:.78rem;color:var(--ink-soft);margin:10px 0 4px;">Connected: <a href="https://gist.github.com/' + esc(gistId) + '" target="_blank" rel="noopener" style="color:var(--gold);">gist &#8594;</a></p>' +
+      '<p style="font-size:.72rem;color:var(--ink-soft);margin:0 0 16px;">Last synced: ' + timeAgo(getLastSync()) + '</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
+        '<button class="btn gold" id="pushBtn" style="flex:1;">&#11015; Push current library</button>' +
+        '<button class="btn" id="pullBtn" style="flex:1;">&#11014; Pull latest from cloud</button>' +
+      '</div>' +
+      '<label style="display:flex;align-items:center;gap:8px;font-size:.8rem;cursor:pointer;">' +
+        '<input type="checkbox" id="autoSyncCheck"' + (getAutoSync() ? ' checked' : '') + '> Auto-push after every change' +
+      '</label>' +
+      '<div class="modal-actions"><button class="btn" id="modalCancelBtn">Close</button></div>';
+    openModal(html);
+    wireCommonCloudButtons();
+    document.getElementById('pushBtn').addEventListener('click', async function(){
+      var btn = this; var orig = btn.textContent;
+      btn.textContent = '\u23f3 Pushing...'; btn.disabled = true;
+      await pushToGist(false);
+      closeModal();
+    });
+    document.getElementById('pullBtn').addEventListener('click', function(){
+      pullFromGist();
+    });
+    document.getElementById('autoSyncCheck').addEventListener('change', function(){
+      setAutoSync(this.checked);
+    });
+
+    function wireCommonCloudButtons(){
+      document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
+      var clearLink = document.getElementById('ghTokenClearLink');
+      if(clearLink){
+        clearLink.addEventListener('click', function(e){
+          e.preventDefault();
+          if(!confirm('Token hata doon? Auto-sync band ho jayega (data delete nahi hoga).')) return;
+          setGhToken(null);
+          setGistId(null);
+          setAutoSync(false);
+          promptCloudSyncModal();
+        });
+      }
+    }
+  }
   function slugify(name){
     return (name || 'export').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'export';
   }
@@ -509,6 +805,10 @@
         if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       });
     }
+    var cloudSyncBtn = document.getElementById('cloudSyncBtn');
+    if(cloudSyncBtn) cloudSyncBtn.addEventListener('click', promptCloudSyncModal);
+    var omdbKeyBtn = document.getElementById('omdbKeyBtn');
+    if(omdbKeyBtn) omdbKeyBtn.addEventListener('click', promptOmdbKey);
     var exportBtn = document.getElementById('exportBtn');
     if(exportBtn) exportBtn.addEventListener('click', exportBackup);
     var exportFolderBtn = document.getElementById('exportFolderBtn');

@@ -42,36 +42,14 @@ input, textarea, select{ font-family:inherit; }
   padding:38px 20px 80px;
 }
 
-/* ---------- Cover header ---------- */
-.cover{
-  text-align:center;
-  padding:18px 10px 30px;
-  color:#f0e4cc;
-}
-.cover .stamp{
-  display:inline-block;
+/* ---------- Brand tag (compact, inline in toolbar) ---------- */
+.brand-tag{
   font-family:var(--font-type);
-  font-size:.68rem;
-  letter-spacing:.28em;
-  text-transform:uppercase;
-  color:var(--gold);
-  border:1px solid rgba(184,135,46,0.55);
-  border-radius:999px;
-  padding:5px 14px;
-  margin-bottom:14px;
-}
-.cover h1{
-  font-family:var(--font-display);
-  font-weight:400;
-  font-size:2.5rem;
-  margin:0 0 6px;
-  letter-spacing:.01em;
-}
-.cover p{
-  font-family:var(--font-type);
-  font-size:.82rem;
-  color:#cbb894;
-  margin:0;
+  font-size:.85rem;
+  letter-spacing:.03em;
+  color:#e7d8b8;
+  padding:10px 4px;
+  white-space:nowrap;
 }
 
 /* ---------- Toolbar ---------- */
@@ -310,9 +288,16 @@ input, textarea, select{ font-family:inherit; }
   font-family:var(--font-type);
   font-size:.88rem;
   color:var(--ink);
-  display:block;
+  display:flex;
+  align-items:center;
+  gap:7px;
   margin-bottom:3px;
   word-break:break-word;
+}
+.link-row .ltitle .favicon{
+  width:15px; height:15px;
+  border-radius:3px;
+  flex-shrink:0;
 }
 .link-row.watched .ltitle{ color:var(--ink-soft); text-decoration:line-through; text-decoration-color:rgba(122,106,86,0.5); }
 .link-row .lmeta{
@@ -446,7 +431,6 @@ footer.credits{
 /* ---------- Responsive ---------- */
 @media (max-width:640px){
   #app{ padding:24px 12px 60px; }
-  .cover h1{ font-size:1.9rem; }
   .ledger-page{ padding:20px 16px 24px 34px; }
   .ledger-page::before{ left:20px; }
   .folder-grid{ grid-template-columns:1fr 1fr; }
