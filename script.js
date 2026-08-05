@@ -24,90 +24,6 @@
   }
   function saveData(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }catch(e){}
-    scheduleAutoSync();
-  }
-
-  // ---------- GitHub Gist cloud sync — token stored only in this browser ----------
-  var STORAGE_GH_TOKEN = 'studystack_gh_token';
-  var STORAGE_GIST_ID = 'studystack_gist_id';
-  var STORAGE_AUTOSYNC = 'studystack_autosync';
-  var STORAGE_LAST_SYNC = 'studystack_last_sync';
-  var GIST_FILENAME = 'studystack-data.json';
-  var autoSyncTimer = null;
-
-  function getGhToken(){ try{ return localStorage.getItem(STORAGE_GH_TOKEN) || ''; }catch(e){ return ''; } }
-  function setGhToken(t){ try{ if(t) localStorage.setItem(STORAGE_GH_TOKEN, t); else localStorage.removeItem(STORAGE_GH_TOKEN); }catch(e){} }
-  function getGistId(){ try{ return localStorage.getItem(STORAGE_GIST_ID) || ''; }catch(e){ return ''; } }
-  function setGistId(id){ try{ if(id) localStorage.setItem(STORAGE_GIST_ID, id); else localStorage.removeItem(STORAGE_GIST_ID); }catch(e){} }
-  function getAutoSync(){ try{ return localStorage.getItem(STORAGE_AUTOSYNC) === '1'; }catch(e){ return false; } }
-  function setAutoSync(on){ try{ localStorage.setItem(STORAGE_AUTOSYNC, on ? '1' : '0'); }catch(e){} }
-  function getLastSync(){ try{ return parseInt(localStorage.getItem(STORAGE_LAST_SYNC) || '0', 10); }catch(e){ return 0; } }
-  function setLastSync(ts){ try{ localStorage.setItem(STORAGE_LAST_SYNC, String(ts)); }catch(e){} }
-
-  function scheduleAutoSync(){
-    if(!getAutoSync() || !getGhToken() || !getGistId()) return;
-    clearTimeout(autoSyncTimer);
-    autoSyncTimer = setTimeout(function(){ pushToGist(true); }, 2500);
-  }
-
-  async function pushToGist(silent){
-    var token = getGhToken();
-    if(!token){ if(!silent) alert('Pehle GitHub token set karo.'); return false; }
-    var gistId = getGistId();
-    var payload = {
-      description: 'StudyStack backup',
-      public: false,
-      files: {}
-    };
-    payload.files[GIST_FILENAME] = { content: JSON.stringify(data, null, 2) };
-    try{
-      var url = gistId ? ('https://api.github.com/gists/' + gistId) : 'https://api.github.com/gists';
-      var res = await fetch(url, {
-        method: gistId ? 'PATCH' : 'POST',
-        headers: {
-          'Authorization': 'token ' + token,
-          'Accept': 'application/vnd.github+json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      if(!res.ok){ var errText = await res.text(); throw new Error(res.status + ': ' + errText.slice(0,200)); }
-      var json = await res.json();
-      if(!gistId) setGistId(json.id);
-      setLastSync(Date.now());
-      if(!silent) alert('Cloud pe save ho gaya \u2705');
-      return true;
-    }catch(err){
-      if(!silent) alert('Push fail ho gaya:\n' + err.message);
-      return false;
-    }
-  }
-
-  async function pullFromGist(){
-    var token = getGhToken();
-    var gistId = getGistId();
-    if(!token || !gistId){ alert('Pehle token set karo aur ek cloud backup se connect karo.'); return; }
-    try{
-      var res = await fetch('https://api.github.com/gists/' + gistId, {
-        headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' }
-      });
-      if(!res.ok) throw new Error('Gist load nahi hua (status ' + res.status + ')');
-      var json = await res.json();
-      var file = json.files && json.files[GIST_FILENAME];
-      if(!file) throw new Error('Is gist mein StudyStack data file nahi mili.');
-      var content = file.content;
-      if(file.truncated){
-        var rawRes = await fetch(file.raw_url);
-        content = await rawRes.text();
-      }
-      var parsed = JSON.parse(content);
-      if(!parsed || parsed.type !== 'folder') throw new Error('Cloud data valid nahi lag raha.');
-      setLastSync(Date.now());
-      closeModal();
-      promptImportChoiceModal(parsed);
-    }catch(err){
-      alert('Pull fail ho gaya:\n' + err.message);
-    }
   }
 
   // ---------- OMDb (IMDb) key — stored only in this browser, never in source files ----------
@@ -258,7 +174,6 @@
           '<span class="icon">&#128269;</span>' +
           '<input type="text" id="searchInput" placeholder="Search every folder and link..." value="' + esc(searchQuery) + '">' +
         '</div>' +
-        '<button class="btn ghost" id="cloudSyncBtn">&#9729; Cloud Sync</button>' +
         '<button class="btn ghost" id="omdbKeyBtn">&#127916; OMDb Key</button>' +
         '<button class="btn ghost" id="exportBtn">&#11015; Export backup</button>' +
         '<button class="btn ghost" id="importBtn">&#11014; Import backup</button>' +
@@ -580,120 +495,7 @@
     });
   }
 
-  function timeAgo(ts){
-    if(!ts) return 'never';
-    var s = Math.floor((Date.now() - ts) / 1000);
-    if(s < 60) return 'just now';
-    if(s < 3600) return Math.floor(s/60) + ' min ago';
-    if(s < 86400) return Math.floor(s/3600) + ' hr ago';
-    return Math.floor(s/86400) + ' day(s) ago';
-  }
-
-  function promptCloudSyncModal(){
-    var token = getGhToken();
-    var gistId = getGistId();
-    var html = '<h3>&#9729; Cloud Sync</h3>';
-
-    if(!token){
-      html +=
-        '<p style="font-size:.8rem;color:var(--ink-soft);margin:0 0 12px;">' +
-          'Sync tumhare GitHub account ke ek private Gist mein hota hai — same account jo tum already use karte ho. Ek Personal Access Token chahiye, sirf <b>gist</b> permission ke saath.' +
-        '</p>' +
-        '<p style="margin:0 0 16px;"><a href="https://github.com/settings/tokens/new?scopes=gist&description=StudyStack%20Sync" target="_blank" rel="noopener" style="color:var(--gold);font-size:.82rem;">Token banao GitHub par &#8594;</a></p>' +
-        '<label class="field-label">Token paste karo</label>' +
-        '<input type="text" id="ghTokenInput" placeholder="ghp_...">' +
-        '<div class="modal-actions">' +
-          '<button class="btn" id="modalCancelBtn">Cancel</button>' +
-          '<button class="btn gold" id="ghTokenSaveBtn">Save token</button>' +
-        '</div>';
-      openModal(html);
-      document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
-      var tokenInput = document.getElementById('ghTokenInput');
-      tokenInput.focus();
-      document.getElementById('ghTokenSaveBtn').addEventListener('click', function(){
-        var v = tokenInput.value.trim();
-        if(!v){ alert('Token paste karo pehle.'); return; }
-        setGhToken(v);
-        promptCloudSyncModal();
-      });
-      return;
-    }
-
-    var masked = token.slice(0,4) + '\u2022\u2022\u2022\u2022' + token.slice(-4);
-    html += '<p style="font-size:.78rem;color:var(--ink-soft);margin:0 0 4px;">Token: ' + esc(masked) + ' &middot; <a href="#" id="ghTokenClearLink" style="color:var(--rule-red);">remove</a></p>';
-
-    if(!gistId){
-      html +=
-        '<p style="font-size:.8rem;color:var(--ink-soft);margin:14px 0 14px;">Koi cloud backup connect nahi hai abhi.</p>' +
-        '<div style="display:flex;flex-direction:column;gap:10px;">' +
-          '<button class="btn gold" id="createGistBtn">&#127381; Create new cloud backup</button>' +
-        '</div>' +
-        '<label class="field-label">Ya doosre device ki existing backup se connect karo</label>' +
-        '<input type="text" id="gistIdInput" placeholder="Gist URL ya ID paste karo">' +
-        '<div class="modal-actions">' +
-          '<button class="btn" id="modalCancelBtn">Close</button>' +
-          '<button class="btn" id="connectGistBtn">Connect</button>' +
-        '</div>';
-      openModal(html);
-      wireCommonCloudButtons();
-      document.getElementById('createGistBtn').addEventListener('click', async function(){
-        var btn = this; var orig = btn.textContent;
-        btn.textContent = '\u23f3 Creating...'; btn.disabled = true;
-        var ok = await pushToGist(true);
-        if(ok){ promptCloudSyncModal(); } else { btn.textContent = orig; btn.disabled = false; }
-      });
-      document.getElementById('connectGistBtn').addEventListener('click', function(){
-        var raw = document.getElementById('gistIdInput').value.trim();
-        if(!raw){ return; }
-        var m = raw.match(/gist\.github\.com\/[^\/]+\/([a-f0-9]+)/i) || raw.match(/^([a-f0-9]{20,})$/i);
-        var id = m ? m[1] : raw;
-        setGistId(id);
-        promptCloudSyncModal();
-      });
-      return;
-    }
-
-    html +=
-      '<p style="font-size:.78rem;color:var(--ink-soft);margin:10px 0 4px;">Connected: <a href="https://gist.github.com/' + esc(gistId) + '" target="_blank" rel="noopener" style="color:var(--gold);">gist &#8594;</a></p>' +
-      '<p style="font-size:.72rem;color:var(--ink-soft);margin:0 0 16px;">Last synced: ' + timeAgo(getLastSync()) + '</p>' +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
-        '<button class="btn gold" id="pushBtn" style="flex:1;">&#11015; Push current library</button>' +
-        '<button class="btn" id="pullBtn" style="flex:1;">&#11014; Pull latest from cloud</button>' +
-      '</div>' +
-      '<label style="display:flex;align-items:center;gap:8px;font-size:.8rem;cursor:pointer;">' +
-        '<input type="checkbox" id="autoSyncCheck"' + (getAutoSync() ? ' checked' : '') + '> Auto-push after every change' +
-      '</label>' +
-      '<div class="modal-actions"><button class="btn" id="modalCancelBtn">Close</button></div>';
-    openModal(html);
-    wireCommonCloudButtons();
-    document.getElementById('pushBtn').addEventListener('click', async function(){
-      var btn = this; var orig = btn.textContent;
-      btn.textContent = '\u23f3 Pushing...'; btn.disabled = true;
-      await pushToGist(false);
-      closeModal();
-    });
-    document.getElementById('pullBtn').addEventListener('click', function(){
-      pullFromGist();
-    });
-    document.getElementById('autoSyncCheck').addEventListener('change', function(){
-      setAutoSync(this.checked);
-    });
-
-    function wireCommonCloudButtons(){
-      document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
-      var clearLink = document.getElementById('ghTokenClearLink');
-      if(clearLink){
-        clearLink.addEventListener('click', function(e){
-          e.preventDefault();
-          if(!confirm('Token hata doon? Auto-sync band ho jayega (data delete nahi hoga).')) return;
-          setGhToken(null);
-          setGistId(null);
-          setAutoSync(false);
-          promptCloudSyncModal();
-        });
-      }
-    }
-  }
+  // ---------- import / export ----------
   function slugify(name){
     return (name || 'export').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'export';
   }
@@ -805,8 +607,6 @@
         if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       });
     }
-    var cloudSyncBtn = document.getElementById('cloudSyncBtn');
-    if(cloudSyncBtn) cloudSyncBtn.addEventListener('click', promptCloudSyncModal);
     var omdbKeyBtn = document.getElementById('omdbKeyBtn');
     if(omdbKeyBtn) omdbKeyBtn.addEventListener('click', promptOmdbKey);
     var exportBtn = document.getElementById('exportBtn');
