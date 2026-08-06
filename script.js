@@ -9,6 +9,43 @@
   var path = ['root'];  // array of folder ids, root -> ... -> current
   var searchQuery = '';
 
+  // ---------- sound engine (synthesized, no audio files needed) ----------
+  var audioCtx = null;
+  function ensureAudioCtx(){
+    if(audioCtx) return audioCtx;
+    try{
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctx();
+    }catch(e){ audioCtx = null; }
+    return audioCtx;
+  }
+  function tone(freq, start, dur, type, peakVol){
+    var ctx = ensureAudioCtx();
+    if(!ctx) return;
+    if(ctx.state === 'suspended') ctx.resume();
+    var t0 = ctx.currentTime + start;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peakVol || 0.14, t0 + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+  var snd = {
+    click: function(){ tone(720, 0, 0.06, 'triangle', 0.10); },
+    open: function(){ tone(520, 0, 0.05, 'triangle', 0.09); tone(760, 0.04, 0.06, 'triangle', 0.08); },
+    toggleOn: function(){ tone(660, 0, 0.05, 'sine', 0.13); tone(990, 0.05, 0.09, 'sine', 0.13); },
+    toggleOff: function(){ tone(500, 0, 0.07, 'sine', 0.10); },
+    success: function(){ tone(600, 0, 0.06, 'sine', 0.12); tone(900, 0.06, 0.06, 'sine', 0.12); tone(1200, 0.12, 0.1, 'sine', 0.11); },
+    remove: function(){ tone(420, 0, 0.05, 'sawtooth', 0.09); tone(260, 0.05, 0.12, 'sawtooth', 0.09); },
+    modal: function(){ tone(480, 0, 0.05, 'sine', 0.07); }
+  };
+
   // ---------- storage ----------
   function defaultData(){
     return { id:'root', type:'folder', name:'My Library', children:[] };
@@ -318,6 +355,7 @@
   // ---------- modal ----------
   function openModal(innerHtml){
     closeModal();
+    snd.modal();
     var backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop open';
     backdrop.id = 'modalBackdrop';
@@ -356,7 +394,7 @@
         currentFolder().children = currentFolder().children || [];
         currentFolder().children.push({ id: genId(), type:'folder', name: name, children: [] });
       }
-      saveData(); closeModal(); render();
+      saveData(); snd.success(); closeModal(); render();
     }
     document.getElementById('modalSaveBtn').addEventListener('click', submit);
     document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
@@ -452,7 +490,7 @@
         folder.children.push({ id: genId(), type:'link', name: name, url: url, note: note, watched:false });
         if(note) folder.noteTemplate = note;
       }
-      saveData(); closeModal(); render();
+      saveData(); snd.success(); closeModal(); render();
     }
     document.getElementById('modalSaveBtn').addEventListener('click', submit);
     document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
@@ -495,7 +533,6 @@
     });
   }
 
-  // ---------- import / export ----------
   function slugify(name){
     return (name || 'export').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'export';
   }
@@ -584,6 +621,7 @@
       path = path.slice(0, path.indexOf(id));
       if(path.length === 0) path = ['root'];
     }
+    snd.remove();
     saveData(); render();
   }
   function deleteLink(id){
@@ -593,6 +631,7 @@
     var parent = findParent(id);
     if(!parent) return;
     parent.children = parent.children.filter(function(c){ return c.id !== id; });
+    snd.remove();
     saveData(); render();
   }
 
@@ -633,6 +672,7 @@
       el.addEventListener('click', function(e){
         if(e.target.closest('.card-menu') || e.target.closest('.icon-btn')) return;
         var id = el.getAttribute('data-open');
+        snd.open();
         searchQuery = '';
         var trail = nodePath(id);
         if(trail) path = trail.map(function(n){ return n.id; });
@@ -666,7 +706,11 @@
       el.addEventListener('click', function(e){
         e.stopPropagation();
         var node = findNode(el.getAttribute('data-toggle-watch'));
-        if(node){ node.watched = !node.watched; saveData(); render(); }
+        if(node){
+          node.watched = !node.watched;
+          if(node.watched) snd.toggleOn(); else snd.toggleOff();
+          saveData(); render();
+        }
       });
     });
   }
@@ -674,6 +718,16 @@
   importInput.addEventListener('change', function(){
     if(importInput.files && importInput.files[0]) importBackup(importInput.files[0]);
     importInput.value = '';
+  });
+
+  // Generic click sound for any button/tab, anywhere (including inside modals) —
+  // delete and watch-toggle already fire their own distinct sounds, so skip those here.
+  document.body.addEventListener('click', function(e){
+    var el = e.target.closest('.btn, .icon-btn, .trail-tab:not(.current), .picker-item[data-pick]');
+    if(!el) return;
+    if(el.hasAttribute('data-delete-folder') || el.hasAttribute('data-delete-link')) return;
+    if(el.classList.contains('watch-box')) return;
+    snd.click();
   });
 
   // ---------- init ----------
