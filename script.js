@@ -411,14 +411,15 @@
 
     if (isLockedOut) startLockoutTimer();
 
-    wireLockInput(type, function (val) { currentInput = val; });
+    var resetInput = null;
+    wireLockInput(type, function (val) { currentInput = val; }, function(fn) { resetInput = fn; });
 
-    document.getElementById('lockSubmit').onclick = function () { checkPin(currentInput, type); };
+    document.getElementById('lockSubmit').onclick = function () { checkPin(currentInput, type, resetInput); };
     document.getElementById('lockForgot').onclick = function () { showForgotPin(); };
     document.getElementById('lockLogout').onclick = function () { clearSession(); showAuthScreen(); };
   }
 
-  function checkPin(val, type) {
+  function checkPin(val, type, resetFn) {
     if (!val) { document.getElementById('lockErr').textContent = 'Please enter your ' + pinTypeLabel(type) + '.'; return; }
     if (val === pinData.value) {
       wrongAttempts = 0; snd.success();
@@ -426,14 +427,17 @@
     } else {
       wrongAttempts++;
       snd.error();
+      // Auto-clear input after wrong attempt
+      if (resetFn) resetFn();
       if (wrongAttempts >= 5) {
         captureSecurityPhoto();
         lockoutUntil = Date.now() + 30000;
         wrongAttempts = 0;
         renderLockScreen();
       } else {
-        document.getElementById('lockErr').textContent = 'Wrong ' + pinTypeLabel(type) + '!';
-        document.getElementById('lockAttempts').textContent = wrongAttempts + '/5 wrong attempts';
+        document.getElementById('lockErr').textContent = 'Wrong ' + pinTypeLabel(type) + '! (' + wrongAttempts + '/5)';
+        var attEl = document.getElementById('lockAttempts');
+        if (attEl) attEl.textContent = '';
       }
     }
   }
@@ -525,39 +529,64 @@
   /* ═══════════════════════════════════════════════
      LOCK INPUT WIRING
   ═══════════════════════════════════════════════ */
-  function wireLockInput(type, onChange) {
-    if (type === 'pin')     wirePinInput(onChange);
-    if (type === 'pattern') wirePatternInput(onChange);
-    if (type === 'custom')  wireCustomInput(onChange);
+  function wireLockInput(type, onChange, onReset) {
+    if (type === 'pin')     wirePinInput(onChange, onReset);
+    if (type === 'pattern') wirePatternInput(onChange, onReset);
+    if (type === 'custom')  wireCustomInput(onChange, onReset);
   }
 
-  function wirePinInput(onChange) {
+  function wirePinInput(onChange, onReset) {
     var pinVal = '';
     var pad = document.getElementById('pinPad');
     if (!pad) return;
+
+    function updateDots() {
+      for (var i = 0; i < 4; i++) {
+        var dot = document.getElementById('d' + i);
+        if (dot) dot.className = 'pin-dot' + (i < pinVal.length ? ' filled' : '');
+      }
+    }
+    function resetPin() {
+      pinVal = '';
+      updateDots();
+      onChange('');
+    }
+    // Expose reset so checkPin can call it
+    if (onReset) onReset(resetPin);
+
     pad.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-k]'); if (!btn) return;
       var k = btn.getAttribute('data-k');
       snd.pin();
       if (k === 'del') { pinVal = pinVal.slice(0, -1); }
       else if (pinVal.length < 4) { pinVal += k; }
-      for (var i = 0; i < 4; i++) {
-        var dot = document.getElementById('d' + i);
-        if (dot) dot.className = 'pin-dot' + (i < pinVal.length ? ' filled' : '');
-      }
+      updateDots();
       onChange(pinVal);
     });
   }
 
-  function wirePatternInput(onChange) {
+  function wirePatternInput(onChange, onReset) {
     patternSelected = []; patternActive = false;
     var grid = document.getElementById('patternGrid');
     var canvas = document.getElementById('patternCanvas');
     if (!grid || !canvas) return;
 
-    setTimeout(function () {
+    function resetPattern() {
+      patternSelected = []; patternActive = false;
+      document.querySelectorAll('.pattern-dot').forEach(function(d){ d.className='pattern-dot'; });
+      var ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      var hint = document.getElementById('patternHint');
+      if (hint) hint.textContent = 'Draw your pattern';
+      onChange('');
+    }
+    if (onReset) onReset(resetPattern);
+
+    // Setup canvas size and dot positions after DOM renders
+    function setupCanvas() {
       var rect = grid.getBoundingClientRect();
-      canvas.width = rect.width; canvas.height = rect.height;
+      canvas.width = rect.width;
+      canvas.height = rect.height;
       patternPositions = [];
       for (var i = 0; i < 9; i++) {
         var dot = document.getElementById('pd' + i);
@@ -569,29 +598,37 @@
           });
         }
       }
-    }, 50);
+    }
+    setTimeout(setupCanvas, 100);
 
     function getPos(e) {
       var rect = canvas.getBoundingClientRect();
-      var clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      var clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      return { x: clientX - rect.left, y: clientY - rect.top };
+      var touch = e.touches && e.touches[0];
+      var clientX = touch ? touch.clientX : e.clientX;
+      var clientY = touch ? touch.clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) * (canvas.width / rect.width),
+        y: (clientY - rect.top) * (canvas.height / rect.height)
+      };
     }
+
     function hitDot(pos) {
       for (var i = 0; i < patternPositions.length; i++) {
         var p = patternPositions[i];
         var dx = pos.x - p.x, dy = pos.y - p.y;
-        if (Math.sqrt(dx*dx+dy*dy) < 22 && patternSelected.indexOf(i) === -1) return i;
+        if (Math.sqrt(dx*dx + dy*dy) < 28 && patternSelected.indexOf(i) === -1) return i;
       }
       return -1;
     }
+
     function drawPattern(curPos) {
       var ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (patternSelected.length < 1) return;
-      ctx.strokeStyle = 'rgba(184,135,46,0.7)';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(184,135,46,0.8)';
+      ctx.lineWidth = 3;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.beginPath();
       var p0 = patternPositions[patternSelected[0]];
       ctx.moveTo(p0.x, p0.y);
@@ -602,46 +639,59 @@
       if (curPos) ctx.lineTo(curPos.x, curPos.y);
       ctx.stroke();
     }
+
     function onStart(e) {
       e.preventDefault();
+      e.stopPropagation();
+      // Re-setup canvas if needed
+      if (patternPositions.length === 0) setupCanvas();
       patternSelected = []; patternActive = true;
       document.querySelectorAll('.pattern-dot').forEach(function(d){ d.className='pattern-dot'; });
-      var canvas2 = document.getElementById('patternCanvas');
-      if (canvas2) { var ctx=canvas2.getContext('2d'); ctx.clearRect(0,0,canvas2.width,canvas2.height); }
+      var ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       var idx = hitDot(getPos(e));
       if (idx !== -1) {
         patternSelected.push(idx);
-        var dot = document.getElementById('pd'+idx);
+        var dot = document.getElementById('pd' + idx);
         if (dot) dot.className = 'pattern-dot active';
+        snd.pin();
       }
     }
+
     function onMove(e) {
-      if (!patternActive) return; e.preventDefault();
+      if (!patternActive) return;
+      e.preventDefault();
+      e.stopPropagation();
       var pos = getPos(e);
       var idx = hitDot(pos);
       if (idx !== -1) {
         patternSelected.push(idx);
-        var dot = document.getElementById('pd'+idx);
+        var dot = document.getElementById('pd' + idx);
         if (dot) dot.className = 'pattern-dot active';
         snd.pin();
       }
       drawPattern(pos);
     }
+
     function onEnd(e) {
       if (!patternActive) return;
+      e.preventDefault();
       patternActive = false;
       drawPattern(null);
       var val = patternSelected.join('-');
       onChange(val);
       var hint = document.getElementById('patternHint');
-      if (hint) hint.textContent = patternSelected.length + ' dots selected';
+      if (hint) hint.textContent = patternSelected.length + ' dot(s) connected';
     }
+
+    // Mouse events
     canvas.addEventListener('mousedown', onStart);
-    canvas.addEventListener('mousemove', onMove);
-    canvas.addEventListener('mouseup', onEnd);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+    // Touch events
     canvas.addEventListener('touchstart', onStart, { passive: false });
-    canvas.addEventListener('touchmove', onMove, { passive: false });
-    canvas.addEventListener('touchend', onEnd);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('touchend', onEnd, { passive: false });
   }
 
   function wireCustomInput(onChange) {
@@ -700,6 +750,10 @@
         render();
       });
   }
+
+  /* ══════════════════════════════════════════════════════════════
+     MAIN RENDER — script continues in Part 2
+  ══════════════════════════════════════════════════════════════ */
 
   /* ═══════════════════════════════════════════════
      TOOLBAR & MAIN RENDER
