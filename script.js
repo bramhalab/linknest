@@ -420,26 +420,36 @@
   }
 
   function checkPin(val, type, resetFn) {
-    if (!val) { document.getElementById('lockErr').textContent = 'Please enter your ' + pinTypeLabel(type) + '.'; return; }
-    if (val === pinData.value) {
-      wrongAttempts = 0; snd.success();
-      loadUserData();
-    } else {
-      wrongAttempts++;
-      snd.error();
-      // Auto-clear input after wrong attempt
-      if (resetFn) resetFn();
-      if (wrongAttempts >= 5) {
-        captureSecurityPhoto();
-        lockoutUntil = Date.now() + 30000;
-        wrongAttempts = 0;
-        renderLockScreen();
-      } else {
-        document.getElementById('lockErr').textContent = 'Wrong ' + pinTypeLabel(type) + '! (' + wrongAttempts + '/5)';
-        var attEl = document.getElementById('lockAttempts');
-        if (attEl) attEl.textContent = '';
-      }
+    if (!val) {
+      document.getElementById("lockErr").textContent = "Please enter your " + pinTypeLabel(type) + ".";
+      return;
     }
+    var submitBtn = document.getElementById("lockSubmit");
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Checking..."; }
+    apiPost("/verify-pin", { username: session.username, pin: val })
+      .then(function (res) {
+        if (res.match) {
+          wrongAttempts = 0; snd.success(); loadUserData();
+        } else {
+          wrongAttempts++; snd.error();
+          if (resetFn) resetFn();
+          if (wrongAttempts >= 5) {
+            captureSecurityPhoto();
+            lockoutUntil = Date.now() + 30000;
+            wrongAttempts = 0;
+            renderLockScreen();
+          } else {
+            var errEl = document.getElementById("lockErr");
+            if (errEl) errEl.textContent = "Wrong " + pinTypeLabel(type) + "! (" + wrongAttempts + "/5)";
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Unlock"; }
+          }
+        }
+      })
+      .catch(function () {
+        var errEl = document.getElementById("lockErr");
+        if (errEl) errEl.textContent = "Network error. Try again.";
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Unlock"; }
+      });
   }
 
   function startLockoutTimer() {
