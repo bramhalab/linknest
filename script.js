@@ -898,58 +898,128 @@
   ═══════════════════════════════════════════════ */
   function render() {
     var appEl = document.getElementById('app');
-    var html = renderToolbar();
-    if (searchQuery.trim()) html += renderSearchResults();
-    else html += renderTrail() + renderLedgerPage();
-    html += '<footer class="credits">&#128274; LinkNest &middot; ' + esc(session.username) + ' &middot; Synced to private cloud</footer>';
-    appEl.innerHTML = html;
+    appEl.innerHTML = renderSidebar() + renderMainContent();
     wireAppEvents();
   }
 
-  function renderToolbar() {
-    return '<div class="toolbar">' +
-      '<span class="brand-tag">&#128193; LinkNest</span>' +
-      '<div class="search-wrap">' +
-        '<span class="icon">&#128269;</span>' +
-        '<input type="text" id="searchInput" placeholder="Search folders and links..." value="' + esc(searchQuery) + '">' +
+  /* ── Sidebar ── */
+  function renderSidebar() {
+    var allFolders = [];
+    (function walk(node, depth) {
+      if (node.type === 'folder' && node.id !== 'root') {
+        allFolders.push({ node: node, depth: depth });
+      }
+      if (node.type === 'folder' && node.children) {
+        node.children.forEach(function(c) { walk(c, depth + 1); });
+      }
+    })(data, 0);
+
+    var treeHtml = '<div class="tree-section-label">My Library</div>';
+
+    // Root item
+    treeHtml += '<div class="tree-item' + (path[path.length-1] === 'root' ? ' active' : '') + '" data-nav="root">' +
+      '<span class="tree-item-icon">&#128196;</span>' +
+      '<span class="tree-item-label">All Files</span>' +
+      '<span class="tree-item-count">' + progressOf(data).total + '</span>' +
+    '</div>';
+
+    // Subfolder tree
+    allFolders.forEach(function(f) {
+      var prog = progressOf(f.node);
+      var isActive = path[path.length-1] === f.node.id;
+      treeHtml += '<div class="tree-item' + (isActive ? ' active' : '') +
+        '" data-nav="' + esc(f.node.id) + '" style="padding-left:' + (14 + f.depth * 14) + 'px">' +
+        '<span class="tree-item-icon">&#128193;</span>' +
+        '<span class="tree-item-label">' + esc(f.node.name) + '</span>' +
+        (prog.total ? '<span class="tree-item-count">' + prog.watched + '/' + prog.total + '</span>' : '') +
+      '</div>';
+    });
+
+    // Avatar initial
+    var initial = session.username ? session.username[0].toUpperCase() : 'U';
+
+    return '<div class="sidebar" id="appSidebar">' +
+      '<div class="sidebar-logo">' +
+        '<span class="sidebar-logo-icon">&#128193;</span>' +
+        '<span class="sidebar-logo-text">LinkNest</span>' +
+        '<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>' +
       '</div>' +
-      '<div class="toolbar-right">' +
-        '<button class="btn ghost" id="settingsBtn">&#9881; Settings</button>' +
-        '<button class="btn ghost" id="exportBtn">&#11015; Export</button>' +
-        '<button class="btn ghost" id="importBtn">&#11014; Import</button>' +
+      '<div class="sidebar-search">' +
+        '<div class="sidebar-search-wrap">' +
+          '<span class="sidebar-search-icon">&#128269;</span>' +
+          '<input type="text" id="searchInput" placeholder="Search..." value="' + esc(searchQuery) + '">' +
+        '</div>' +
+      '</div>' +
+      '<div class="sidebar-tree" id="sidebarTree">' + treeHtml + '</div>' +
+      '<div class="sidebar-bottom">' +
+        '<div class="sidebar-user" id="sidebarUserBtn">' +
+          '<div class="sidebar-avatar">' + initial + '</div>' +
+          '<div class="sidebar-user-info">' +
+            '<div class="sidebar-username">' + esc(session.username) + '</div>' +
+            '<div class="sidebar-user-sub">cloud sync</div>' +
+          '</div>' +
+          '<button class="sidebar-settings-btn" id="settingsBtn" title="Settings">&#9881;</button>' +
+        '</div>' +
       '</div>' +
     '</div>';
   }
 
-  function renderTrail() {
+  /* ── Main content ── */
+  function renderMainContent() {
     var crumbs = nodePath(currentFolder().id) || [data];
-    var html = '<div class="trail">';
-    crumbs.forEach(function (node, i) {
+    var breadcrumb = '<div class="breadcrumb">';
+    crumbs.forEach(function(node, i) {
       var cur = i === crumbs.length - 1;
-      html += '<button class="trail-tab' + (cur ? ' current' : '') + '" data-nav="' + esc(node.id) + '"' + (cur ? ' disabled' : '') + '>' + esc(node.name) + '</button>';
+      if (i > 0) breadcrumb += '<span class="bread-sep">&#8250;</span>';
+      breadcrumb += '<span class="bread-item' + (cur ? ' current' : '') + '" ' +
+        (cur ? '' : 'data-nav="' + esc(node.id) + '"') + '>' + esc(node.name) + '</span>';
     });
-    return html + '</div>';
+    breadcrumb += '</div>';
+
+    var topbar = '<div class="topbar">' +
+      breadcrumb +
+      '<div class="topbar-actions">' +
+        (path.length > 1 ? '<button class="btn ghost" id="exportFolderBtn" title="Export folder"><span>&#11015;</span></button>' : '') +
+        '<button class="btn ghost" id="exportBtn" title="Export all"><span>&#11015; Export</span></button>' +
+        '<button class="btn ghost" id="importBtn" title="Import"><span>&#11014; Import</span></button>' +
+      '</div>' +
+    '</div>';
+
+    var body = '';
+    if (searchQuery.trim()) {
+      body = renderSearchResults();
+    } else {
+      body = renderFolderPage();
+    }
+
+    return '<div class="main-content">' + topbar +
+      '<div class="content-area">' + body + '</div>' +
+    '</div>';
   }
 
-  function renderLedgerPage() {
+  function renderFolderPage() {
     var folder = currentFolder();
     var kids = folder.children || [];
-    var subfolders = kids.filter(function (k) { return k.type === 'folder'; });
-    var links = kids.filter(function (k) { return k.type === 'link'; });
-    var html = '<div class="ledger-page">';
-    html += '<div class="page-actions">' +
-      (path.length > 1 ? '<button class="btn ghost" id="exportFolderBtn">&#11015; Export folder</button>' : '') +
+    var subfolders = kids.filter(function(k) { return k.type === 'folder'; });
+    var links = kids.filter(function(k) { return k.type === 'link'; });
+
+    var html = '<div class="page-actions">' +
       '<button class="btn" id="newFolderBtn">&#128193; New folder</button>' +
-      '<button class="btn gold" id="newLinkBtn">&#9654; Add link</button>' +
+      '<div class="page-actions-right">' +
+        '<button class="btn gold" id="newLinkBtn">&#43; Add link</button>' +
+      '</div>' +
     '</div>';
 
     if (!subfolders.length && !links.length) {
-      html += '<div class="empty-state"><div class="big">This folder is empty</div>' +
-        '<p>Create a folder or save a link here — movies, courses, articles, anything.</p></div>';
+      html += '<div class="empty-state">' +
+        '<div class="big">This folder is empty</div>' +
+        '<p>Create a folder to organise, or add a link — movies, courses, articles, anything.</p>' +
+        '<button class="btn gold" id="newLinkBtn2">&#43; Add your first link</button>' +
+      '</div>';
     } else {
       if (subfolders.length) {
         html += '<div class="section-label">Folders</div><div class="folder-grid">';
-        subfolders.forEach(function (f) {
+        subfolders.forEach(function(f) {
           var prog = progressOf(f);
           var pct = prog.total ? Math.round((prog.watched / prog.total) * 100) : 0;
           html += '<div class="folder-card" data-open="' + esc(f.id) + '">' +
@@ -960,18 +1030,21 @@
             '</div>' +
             '<span class="fname">' + esc(f.name) + '</span>' +
             '<div class="fmeta">' +
-              (prog.total ? '<div class="prog-bar"><div class="prog-fill" style="width:' + pct + '%"></div></div><span>' + prog.watched + '/' + prog.total + '</span>' : '<span>empty</span>') +
+              (prog.total
+                ? '<div class="prog-bar"><div class="prog-fill" style="width:' + pct + '%"></div></div><span>' + prog.watched + '/' + prog.total + '</span>'
+                : '<span style="opacity:.5">empty</span>') +
             '</div></div>';
         });
         html += '</div>';
       }
       if (links.length) {
-        html += '<div class="section-label">Links</div><div class="link-rows">';
-        links.forEach(function (l, i) { html += renderLinkRow(l, i + 1); });
+        html += '<div class="section-label" style="margin-top:' + (subfolders.length ? '20px' : '0') + '">Links</div>' +
+          '<div class="link-rows">';
+        links.forEach(function(l, i) { html += renderLinkRow(l, i + 1); });
         html += '</div>';
       }
     }
-    return html + '</div>';
+    return html;
   }
 
   function renderLinkRow(l, num, pathHint) {
@@ -1393,35 +1466,73 @@
      APP EVENT WIRING
   ═══════════════════════════════════════════════ */
   function wireAppEvents() {
+    // Search
     var si = document.getElementById('searchInput');
     if (si) si.oninput = function () {
       searchQuery = si.value; render();
-      var el = document.getElementById('searchInput'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      var el = document.getElementById('searchInput');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     };
-    var settBtn = document.getElementById('settingsBtn'); if (settBtn) settBtn.onclick = showSettings;
-    var expBtn  = document.getElementById('exportBtn');   if (expBtn)  expBtn.onclick  = function () { exportNode(data, 'linknest-full'); };
-    var expFBtn = document.getElementById('exportFolderBtn'); if (expFBtn) expFBtn.onclick = function () { exportNode(currentFolder(), 'linknest-folder'); };
-    var impBtn  = document.getElementById('importBtn');   if (impBtn)  impBtn.onclick  = function () { document.getElementById('importFileInput').click(); };
 
-    var nfBtn = document.getElementById('newFolderBtn'); if (nfBtn) nfBtn.onclick = function () { promptFolderModal(null); };
-    var nlBtn = document.getElementById('newLinkBtn');   if (nlBtn) nlBtn.onclick = function () { promptLinkModal(null); };
+    // Sidebar toggle (mobile)
+    var toggle = document.getElementById('sidebarToggle');
+    if (toggle) toggle.onclick = function () {
+      var sb = document.getElementById('appSidebar');
+      if (sb) sb.classList.toggle('open');
+    };
 
+    // Buttons
+    var settBtn = document.getElementById('settingsBtn');
+    if (settBtn) settBtn.onclick = function(e) { e.stopPropagation(); showSettings(); };
+
+    var expBtn = document.getElementById('exportBtn');
+    if (expBtn) expBtn.onclick = function () { exportNode(data, 'linknest-full'); };
+
+    var expFBtn = document.getElementById('exportFolderBtn');
+    if (expFBtn) expFBtn.onclick = function () { exportNode(currentFolder(), 'linknest-folder'); };
+
+    var impBtn = document.getElementById('importBtn');
+    if (impBtn) impBtn.onclick = function () { document.getElementById('importFileInput').click(); };
+
+    var nfBtn = document.getElementById('newFolderBtn');
+    if (nfBtn) nfBtn.onclick = function () { promptFolderModal(null); };
+
+    var nlBtn = document.getElementById('newLinkBtn');
+    if (nlBtn) nlBtn.onclick = function () { promptLinkModal(null); };
+
+    var nlBtn2 = document.getElementById('newLinkBtn2');
+    if (nlBtn2) nlBtn2.onclick = function () { promptLinkModal(null); };
+
+    // Navigation — sidebar tree + breadcrumb
     document.querySelectorAll('[data-nav]').forEach(function (el) {
       el.onclick = function () {
         var id = el.getAttribute('data-nav');
-        var idx = path.indexOf(id);
-        if (idx !== -1) path = path.slice(0, idx + 1);
+        searchQuery = '';
+        if (id === 'root') {
+          path = ['root'];
+        } else {
+          var trail = nodePath(id);
+          if (trail) path = trail.map(function(n) { return n.id; });
+        }
+        // Close sidebar on mobile
+        var sb = document.getElementById('appSidebar');
+        if (sb) sb.classList.remove('open');
         render();
       };
     });
+
+    // Open folder card
     document.querySelectorAll('[data-open]').forEach(function (el) {
       el.onclick = function (e) {
         if (e.target.closest('.card-menu') || e.target.closest('.icon-btn')) return;
-        var id = el.getAttribute('data-open'); snd.open(); searchQuery = '';
-        var trail = nodePath(id); if (trail) path = trail.map(function (n) { return n.id; });
+        var id = el.getAttribute('data-open');
+        snd.open(); searchQuery = '';
+        var trail = nodePath(id);
+        if (trail) path = trail.map(function(n) { return n.id; });
         render();
       };
     });
+
     document.querySelectorAll('[data-rename]').forEach(function (el) {
       el.onclick = function (e) { e.stopPropagation(); var n = findNode(el.getAttribute('data-rename')); if (n) promptFolderModal(n); };
     });
@@ -1451,7 +1562,7 @@
     };
 
     document.body.addEventListener('click', function (e) {
-      var el = e.target.closest('.btn,.icon-btn,.trail-tab:not(.current),.picker-item[data-pick]');
+      var el = e.target.closest('.btn,.icon-btn,.bread-item:not(.current),.picker-item[data-pick]');
       if (!el) return;
       if (el.hasAttribute('data-delete-folder') || el.hasAttribute('data-delete-link') || el.classList.contains('watch-box')) return;
       snd.click();
