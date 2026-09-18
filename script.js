@@ -171,17 +171,109 @@
   function currentFolder() { return findNode(path[path.length - 1]) || data; }
 
   /* ═══════════════════════════════════════════════
-     SAVE TO HF
+     SMART SAVE SYSTEM
+     1. Turant localStorage mein save (instant)
+     2. Har 5 min mein HF pe sync
+     3. Sirf error pe user ko batao
   ═══════════════════════════════════════════════ */
-  var saveTimer = null;
-  function scheduleSave() {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () { saveToHF(); }, 1500);
-  }
-  function saveToHF() {
+  var saveTimer      = null;  // debounce timer
+  var hfSyncTimer    = null;  // 5 min HF sync timer
+  var pendingSync    = false; // kya sync pending hai
+  var syncToastEl    = null;  // notification element
+  var LOCAL_DATA_KEY = 'linknest_data_' + (session ? session.username : '');
+
+  // Step 1 — Instant localStorage save
+  function saveLocal() {
     if (!session || !data) return;
+    try {
+      LOCAL_DATA_KEY = 'linknest_data_' + session.username;
+      localStorage.setItem(LOCAL_DATA_KEY, JSON.stringify(data));
+    } catch (e) {}
+    pendingSync = true;
+  }
+
+  // Step 2 — HF sync (silent, background)
+  function syncToHF() {
+    if (!session || !data || !pendingSync) return;
     var payload = { username: session.username, links: data, securityPhotos: [] };
-    apiPost('/userdata', payload).catch(function () {});
+    apiPost('/userdata', payload)
+      .then(function (res) {
+        if (res && res.success) {
+          pendingSync = false;
+          hideToast(); // success - toast hatao agar dikh raha tha
+        } else {
+          showSyncError();
+        }
+      })
+      .catch(function () {
+        showSyncError();
+      });
+  }
+
+  // Debounced scheduleSave — localStorage turant, HF 5 min mein
+  function scheduleSave() {
+    saveLocal(); // turant local save
+
+    // Debounce timer reset (5 min HF sync)
+    if (hfSyncTimer) clearTimeout(hfSyncTimer);
+    hfSyncTimer = setTimeout(function () {
+      syncToHF();
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  // Page band hone pe HF sync karo
+  window.addEventListener('beforeunload', function () {
+    if (!pendingSync || !session || !data) return;
+    // Synchronous fallback - best effort
+    var payload = JSON.stringify({ username: session.username, links: data, securityPhotos: [] });
+    navigator.sendBeacon
+      ? navigator.sendBeacon(API + '/userdata', new Blob([payload], { type: 'application/json' }))
+      : null;
+  });
+
+  // ── Toast Notifications ──
+  function showSyncError() {
+    if (syncToastEl) return; // already dikh raha hai
+    syncToastEl = document.createElement('div');
+    syncToastEl.id = 'syncToast';
+    syncToastEl.innerHTML =
+      '<span>&#9729; Sync pending — data locally safe hai.</span>' +
+      '<button id="retrySyncBtn">Retry</button>' +
+      '<button id="closeToastBtn">&#10005;</button>';
+    syncToastEl.style.cssText =
+      'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);' +
+      'background:#2b1b14;color:#e7d8b8;border:1px solid rgba(184,135,46,0.4);' +
+      'border-radius:6px;padding:10px 16px;font-size:.78rem;font-family:var(--font-mono);' +
+      'display:flex;align-items:center;gap:10px;z-index:9999;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,0.4);max-width:90vw;';
+    document.body.appendChild(syncToastEl);
+
+    document.getElementById('retrySyncBtn').onclick = function () {
+      pendingSync = true;
+      syncToHF();
+      hideToast();
+      showSyncingToast();
+    };
+    document.getElementById('closeToastBtn').onclick = hideToast;
+  }
+
+  function showSyncingToast() {
+    if (syncToastEl) hideToast();
+    syncToastEl = document.createElement('div');
+    syncToastEl.id = 'syncToast';
+    syncToastEl.innerHTML = '<span>&#8635; Syncing...</span>';
+    syncToastEl.style.cssText =
+      'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);' +
+      'background:#2b1b14;color:#e7d8b8;border:1px solid rgba(184,135,46,0.4);' +
+      'border-radius:6px;padding:10px 16px;font-size:.78rem;font-family:var(--font-mono);' +
+      'display:flex;align-items:center;gap:10px;z-index:9999;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,0.4);';
+    document.body.appendChild(syncToastEl);
+    setTimeout(hideToast, 2000);
+  }
+
+  function hideToast() {
+    if (syncToastEl) { syncToastEl.remove(); syncToastEl = null; }
   }
 
   /* ═══════════════════════════════════════════════
@@ -745,19 +837,55 @@
     document.getElementById('lock-screen').style.display = 'none';
     var appEl = document.getElementById('app');
     appEl.style.display = 'block';
-    appEl.innerHTML = '<div style="text-align:center;padding:60px;color:#e7d8b8;font-family:var(--font-mono);">Loading your library...</div>';
+
+    LOCAL_DATA_KEY = 'linknest_data_' + session.username;
+
+    // Step 1: localStorage se turant load karo
+    var localRaw = null;
+    try { localRaw = localStorage.getItem(LOCAL_DATA_KEY); } catch(e) {}
+
+    if (localRaw) {
+      try {
+        data = JSON.parse(localRaw);
+        path = ['root'];
+        render();
+        // Background mein HF se bhi sync karo (latest check)
+        apiGet('/userdata?username=' + encodeURIComponent(session.username))
+          .then(function (res) {
+            if (res && res.links) {
+              // HF data newer hai to update karo silently
+              data = res.links;
+              saveLocal();
+              render();
+            }
+          })
+          .catch(function () {
+            // HF unavailable - local data already loaded, koi problem nahi
+          });
+        return;
+      } catch(e) {}
+    }
+
+    // Step 2: localStorage nahi mila - HF se load karo
+    appEl.innerHTML = '<div style="text-align:center;padding:60px;color:#e7d8b8;font-family:var(--font-mono);">&#8635; Loading your library...</div>';
 
     apiGet('/userdata?username=' + encodeURIComponent(session.username))
       .then(function (res) {
-        if (res.links) { data = res.links; }
-        else { data = defaultData(); }
+        if (res && res.links) {
+          data = res.links;
+          saveLocal(); // local mein save karo future ke liye
+        } else {
+          data = defaultData();
+        }
         path = ['root'];
         render();
       })
       .catch(function () {
+        // HF bhi nahi mila - fresh start
         data = defaultData();
         path = ['root'];
         render();
+        showSyncError();
       });
   }
 
@@ -1082,6 +1210,7 @@
             '<h4>Account</h4>' +
             '<p style="font-size:.78rem;color:var(--ink-soft);margin-bottom:10px;">Logged in as <strong>' + esc(session.username) + '</strong> (' + esc(session.email) + ')</p>' +
             '<button class="btn" id="changePinBtn" style="margin-bottom:8px;width:100%">&#128274; Change PIN / Pattern / Password</button>' +
+            '<button class="btn" id="feedbackBtn" style="margin-bottom:8px;width:100%">&#128172; Send Feedback</button>' +
             '<button class="btn danger" id="deleteAccountBtn" style="width:100%">&#128465; Delete my account</button>' +
           '</div>' +
           '<div class="settings-section">' +
@@ -1090,6 +1219,7 @@
           '<div class="modal-actions"><button class="btn gold" id="logoutBtn">Logout</button></div>'
         );
         document.getElementById('changePinBtn').onclick = function () { closeModal(); showSetPinScreen(true); };
+        document.getElementById('feedbackBtn').onclick = function () { closeModal(); showFeedback(); };
         document.getElementById('logoutBtn').onclick = function () { clearSession(); showAuthScreen(); };
         document.getElementById('deleteAccountBtn').onclick = function () {
           var pass = prompt('Account permanently delete karna hai? Apna password confirm karo:');
@@ -1105,6 +1235,91 @@
         openModal('<h3>Settings</h3><p>Could not load settings.</p><div class="modal-actions"><button class="btn" id="modalCancelBtn">Close</button></div>');
         document.getElementById('modalCancelBtn').onclick = closeModal;
       });
+  }
+
+  /* ═══════════════════════════════════════════════
+     FEEDBACK
+  ═══════════════════════════════════════════════ */
+  function showFeedback() {
+    openModal(
+      '<h3>&#128172; Send Feedback</h3>' +
+      '<p style="font-size:.78rem;color:var(--ink-soft);margin-bottom:16px;">Tumhara feedback humein tool improve karne mein madad karta hai!</p>' +
+      '<label class="field-label">Name</label>' +
+      '<input type="text" id="fbName" value="' + esc(session.username) + '" placeholder="Tumhara naam">' +
+      '<label class="field-label">Email</label>' +
+      '<input type="email" id="fbEmail" value="' + esc(session.email) + '" placeholder="tumhari@email.com">' +
+      '<label class="field-label">Feedback</label>' +
+      '<textarea id="fbText" placeholder="Kya accha laga? Kya improve ho sakta hai? Koi bug mila?" style="min-height:100px;"></textarea>' +
+      '<label class="field-label">Screenshot (optional)</label>' +
+      '<div style="margin-bottom:4px;">' +
+        '<input type="file" id="fbScreenshot" accept="image/*" style="font-size:.75rem;color:var(--ink-soft);">' +
+      '</div>' +
+      '<div class="auth-error" id="fbErr"></div>' +
+      '<div class="modal-actions">' +
+        '<button class="btn" id="modalCancelBtn">Cancel</button>' +
+        '<button class="btn gold" id="fbSubmitBtn">&#128640; Submit</button>' +
+      '</div>'
+    );
+
+    document.getElementById('modalCancelBtn').onclick = closeModal;
+    document.getElementById('fbSubmitBtn').onclick = function () {
+      var name       = document.getElementById('fbName').value.trim();
+      var email      = document.getElementById('fbEmail').value.trim();
+      var text       = document.getElementById('fbText').value.trim();
+      var fileInput  = document.getElementById('fbScreenshot');
+      var errEl      = document.getElementById('fbErr');
+      var submitBtn  = document.getElementById('fbSubmitBtn');
+
+      if (!name || !email || !text) {
+        errEl.textContent = 'Name, email aur feedback text zaroori hai.';
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+
+      function sendFeedback(screenshotData) {
+        var payload = {
+          username: session.username,
+          name: name,
+          email: email,
+          feedback: text,
+          screenshot: screenshotData || null,
+          time: new Date().toISOString()
+        };
+        apiPost('/feedback', payload)
+          .then(function (res) {
+            if (res.success) {
+              closeModal();
+              // Success toast
+              var t = document.createElement('div');
+              t.textContent = '✅ Feedback submit ho gaya! Shukriya!';
+              t.style.cssText = 'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#2b1b14;color:#e7d8b8;border:1px solid rgba(63,107,74,0.5);border-radius:6px;padding:12px 20px;font-size:.8rem;font-family:var(--font-mono);z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.4);';
+              document.body.appendChild(t);
+              setTimeout(function () { t.remove(); }, 3000);
+              snd.success();
+            } else {
+              errEl.textContent = res.error || 'Submit nahi hua. Try again.';
+              submitBtn.disabled = false;
+              submitBtn.textContent = '&#128640; Submit';
+            }
+          })
+          .catch(function () {
+            errEl.textContent = 'Network error. Try again.';
+            submitBtn.disabled = false;
+            submitBtn.textContent = '&#128640; Submit';
+          });
+      }
+
+      // Screenshot hai to pehle read karo
+      if (fileInput.files && fileInput.files[0]) {
+        var reader = new FileReader();
+        reader.onload = function () { sendFeedback(reader.result); };
+        reader.readAsDataURL(fileInput.files[0]);
+      } else {
+        sendFeedback(null);
+      }
+    };
   }
 
   /* ═══════════════════════════════════════════════
